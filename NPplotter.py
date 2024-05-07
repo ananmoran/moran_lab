@@ -1,6 +1,6 @@
-from moran_lab.plotter import plot_psth, plot_psth_with_rasters
+from .plotter import  plot_psth, plot_psth_with_rasters
 import shutil
-from procSpikeGLX.postPhyPipeline import *
+from .postPhyAnal import *
 import time
 from matplotlib import pyplot as plt
 from matplotlib import gridspec
