@@ -143,7 +143,9 @@ def fitBestPoissonModel(activities, trialsNum, num_states=3, num_iter=100):
     scores = list()
     models = list()
 
+    #number of samples in a trial
     ln = int(activities.shape[0] / trialsNum)
+    num_neurons = activities.shape[1]
     lengths = [ln] * trialsNum
     lambdas = predictLambdas(activities, trialsNum, num_states)
 
