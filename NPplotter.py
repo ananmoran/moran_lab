@@ -314,7 +314,6 @@ def packNPData(pathtoses, SesName, pathtosp,
     assert (end_time - start_time) / bin_width == int((end_time - start_time) / bin_width)
 
     bin_amount = int((end_time - start_time) / bin_width)
-
     taste_events = [ev[ev['ID'] == i]['sync_timestamps'].tolist() for i in taste_ids]
     df_clusgroup = pd.read_csv(pathtosp + r'\cluster_group.tsv', sep='\t', header=0)
     df_clusinfo = pd.read_csv(pathtosp + r'\cluster_info.tsv', sep='\t', header=0)
