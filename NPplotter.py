@@ -1,11 +1,14 @@
-from .plotter import  plot_psth, plot_psth_with_rasters
+import numpy as np
+from plotter import plot_psth, plot_psth_with_rasters
 import shutil
-from .postPhyAnal import *
+from postPhyAnal import *
 import time
 from matplotlib import pyplot as plt
 from matplotlib import gridspec
 from npyx import *
 import multiprocessing as mp
+import pandas as pd
+
 
 
 from npyx.spk_wvf import get_peak_chan, wvf, templates
@@ -23,7 +26,7 @@ def getEventData(pathtoses, SesName, g=0, evIDs=(1,2,3,4)):
 # IDs of events indicates the taste?
     for i in evIDs:
         evfile = r'{}\{}_g{}_tcat.nidq.XD_0_{}_0_corr.txt'.format(evpath, SesName, g, i)
-        arr = np.loadtxt(evfile, np.float)
+        arr = np.loadtxt(evfile, 'float')
         synchronized_event_ts = np.append(synchronized_event_ts, arr.tolist())
         eventsID_tastes = np.append(eventsID_tastes, [i]*len(arr))
 
@@ -136,7 +139,6 @@ def plot_3wvf(dp, uu, color='dodgerblue', scalebar_w=5, figw=None, axlst=None):
     return figw
 
 def plotUnitPSTHbyDay(data):
-    print("got here 1")
     sessListBorders = data[0]
     pathtopick = data[1]
     uu = data[2]
@@ -148,7 +150,6 @@ def plotUnitPSTHbyDay(data):
     expdays = data[8]
     dppath = data[9]
 
-    print("got here 2")
     numrows = len(sessListBorders)
     numcols = len(max(sessListBorders, key=len))
     fig = plt.figure(figsize=(15, 15))
@@ -160,7 +161,6 @@ def plotUnitPSTHbyDay(data):
     sptimes = np.load(pathtopick + r'\spike_seconds.npy', mmap_mode='r')
     clust = np.load(pathtopick + r'\spike_clusters.npy', mmap_mode='r')
     st = sptimes[clust == uu].flatten()  # get the spike times for a specific cluster
-    print("got here 3")
     for r in range(numrows):
         currentday = sessListBorders[r]
         for col in range(len(currentday)):
@@ -204,7 +204,6 @@ def plotUnitPSTHbyDay(data):
                 # ax2.set_xticklabels([-2, 0, 2, 4])
                 ax2.set_xlim(-2.5, 4.5)
 
-    print("got here *******************")
     lims = [x[1] for x in axdic.values()]
     nplims = np.reshape(lims, (len(lims), 2))
     maxlim = nplims[:, 1].max()
@@ -215,13 +214,11 @@ def plotUnitPSTHbyDay(data):
         ypos = maxlim - maxlim / 4
         curax[0].text(2, ypos, 't={:.0f}'.format(curax[2]), fontsize='xx-small')
         curax[0].tick_params(axis='both', which='major', labelsize=6)
-    print("got here ^^^^^^^^^^^^^^^^^^^")
     pos = 0.875
     for day in expdays:
         plt.text(0, pos, day, transform=fig.transFigure, fontsize=8)
         pos -= 0.25
 
-    print("got here <<<<<<<<<<<>>>>>>>>>>>")
     plt.rcParams.update({'font.size': 6})
     fig.suptitle('Cluster {}, Depth {}mm from tip'.format(str(uu), str(dep)), fontsize=18)
     fname = '{}/depth_{}_clust_{}'.format(figs_folder, str(dep), str(uu))
@@ -306,13 +303,65 @@ def plotNPPSTH(path_to_ses,SesName, ctatime, expdays, g=0, imec=0, KKsorter='kil
         time.sleep(5)
         J_f_list = results.get()
 
+def packNPData(pathtoses, SesName, pathtosp,
+               taste_names=('water','sucrose','nacl', 'CA','quinine'),
+               taste_ids=range(1,6),
+               start_time=-1, end_time=4, bin_width=0.2, normalize="Hz"):
+
+    ev = getEventData(pathtoses, SesName)
+    gu = npyx.get_units(pathtosp, "good")
+    assert end_time > start_time, 'start time cannot be bigger or equal to end time'
+    assert (end_time - start_time) / bin_width == int((end_time - start_time) / bin_width)
+
+    bin_amount = int((end_time - start_time) / bin_width)
+
+    taste_events = [ev[ev['ID'] == i]['sync_timestamps'].tolist() for i in taste_ids]
+    df_clusgroup = pd.read_csv(pathtosp + r'\cluster_group.tsv', sep='\t', header=0)
+    df_clusinfo = pd.read_csv(pathtosp + r'\cluster_info.tsv', sep='\t', header=0)
+    all_spikes = np.load(pathtosp + r'\spike_seconds.npy', mmap_mode='r')
+    clust = np.load(pathtosp + r'\spike_clusters.npy', mmap_mode='r')
+    sessListBorders = findSessBorders(taste_events)
+    event_dic = dict(zip(taste_names, taste_events))
+    ret_list = [{} for _ in range(len(sessListBorders) - 1)]
+    # Do for each experimental trial (a single session with usually different tastes, several secods appart)
+    for tri in range(len(sessListBorders) - 1):
+        ret_list[tri]['data'] = {}
+        for taste in taste_names:
+            print('collecting spike times for event of taste {}'.format(taste))
+            spikes_all_trials = np.array([])
+            ret_list[tri]['data'][taste] = {}
+            for u in gu:
+                spike_train = all_spikes[clust==u]
+                spike_train = spike_train[(spike_train>sessListBorders[tri]) & (spike_train<=sessListBorders[tri+1])]
+                events = [event for event in event_dic[taste] if  sessListBorders[tri] <= event < sessListBorders[tri+1]]
+                lengths = []
+                for event in events:
+                    spikes = [spike_train[i] - event for i in range(len(spike_train))  if
+                          start_time < spike_train[i] - event < end_time]
+                    hist1, _ = np.histogram(spikes, bin_amount, (start_time, end_time))
+                    if normalize == 'Hz':
+                        hist1 = hist1 / bin_width
+                    # spikes_all_trials = spikes_all_trials.append(hist1)
+                    lengths.append(len(hist1))
+                    spikes_all_trials = np.concatenate((spikes_all_trials, hist1))
+            ret_list[tri]['data'][taste]['FR'] = np.reshape(spikes_all_trials, (-1, len(gu)), 'F')
+            ret_list[tri]['data'][taste]['lengths'] = lengths
+    return ret_list
+
+
 if __name__ == "__main__":
-    path_to_ses = r'G:\GLXData\NDR19'
-    SesName = 'NDR19-Hab3ToExt1'
+    path_to_ses = r'C:\Users\AnanM\OneDrive - Tel-Aviv University\Documents\TAU\data\NP\ND7_post'
+    SesName = 'ND7_post'
     g = 0
     imec = 0
     KKsorter = 'kilosort3'
+    pathtosp = r'C:\Users\AnanM\OneDrive - Tel-Aviv University\Documents\TAU\data\NP\ND7_post\ND7_post_g0\kilosort3'
+    start_time = -1
+    end_time = 5
+    bin_width = 0.2
 
+    packed_data = packNPData(path_to_ses, SesName, pathtosp,taste_names=('water','sucrose','nacl', 'CA'),
+               taste_ids=range(1,5),)
     expdays = ['Hab3', 'CTA', 'Test', 'Ext']
     licl_time = 23.8  #in hrs, we'll call this t=0 of CTA
     evIDs = (1,2,3,4)
