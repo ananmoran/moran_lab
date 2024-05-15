@@ -1,5 +1,5 @@
 import numpy as np
-from plotter import plot_psth, plot_psth_with_rasters
+from moran_lab.plotter import plot_psth, plot_psth_with_rasters
 import shutil
 from postPhyAnal import *
 import time
