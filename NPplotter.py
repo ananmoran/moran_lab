@@ -1,7 +1,7 @@
 import numpy as np
 from moran_lab.plotter import plot_psth, plot_psth_with_rasters
 import shutil
-from postPhyAnal import *
+from moran_lab.postPhyAnal import *
 import time
 from matplotlib import pyplot as plt
 from matplotlib import gridspec
