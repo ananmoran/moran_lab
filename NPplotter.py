@@ -306,14 +306,34 @@ def plotNPPSTH(path_to_ses,SesName, ctatime, expdays, g=0, imec=0, KKsorter='kil
 def packNPData(pathtoses, SesName, pathtosp,
                taste_names=('water','sucrose','nacl', 'CA','quinine'),
                taste_ids=range(1,6),
-               start_time=-1, end_time=4, bin_width=0.2, normalize="Hz"):
+               start_time=-1, end_time=4, bin_width=0.2, bin_overlap=0.1, normalize="Hz"):
+    '''
+    Reads the sorted neuronal data of NP recording and pack it into a pickle file, for HMM analysis
+    :param pathtoses: (str) The path to the folder containing the recorded data
+    :param SesName: (str) The recorded session name
+    :param pathtosp: (str) The foll path the sorted data (KS and Phy output folder)
+    :param taste_names: (list) List of the name of the tastes
+    :param taste_ids: (list) List of the taste IDs
+    :param start_time: (float) The starting point of counting spikes relative to each taste event. Negative number indicate time before taste delivery
+    :param end_time: (float) The ending point of counting spikes relative to each taste event.
+    :param bin_width: (float) The width of the window to count spikes in seconds
+    :param bin_overlap: (float) The overlap between adjacent windows, in seconds
+    :param normalize: Whether to normalize the counts to the window time. "Hz" for normalization. None for no normalization
+    :return: A list of dictionaries, one for each block of trials (usually 2h apart). Each dictionary holds the names of the
+            tastes names in a key called "taste_order". These tastes are also keys of the dictionaries. The value of each
+            taste key is the best model trained on the responses of the neurons to the given taste.
+    '''
 
     ev = getEventData(pathtoses, SesName)
     gu = npyx.get_units(pathtosp, "good")
     assert end_time > start_time, 'start time cannot be bigger or equal to end time'
-    assert (end_time - start_time) / bin_width == int((end_time - start_time) / bin_width)
+    if bin_overlap == 0:
+        assert (end_time - start_time) - bin_width == int((end_time - start_time) / bin_width)
+    else:
+        bin_step = bin_width - bin_overlap
+        assert (end_time - start_time - bin_width)/bin_step - int((end_time - start_time - bin_width)/bin_step) < 10e-5
 
-    bin_amount = int((end_time - start_time) / bin_width)
+    bin_amount = int((end_time - start_time) / bin_width) if bin_overlap == 0 else int((end_time - start_time - bin_width)/bin_overlap)+1
     taste_events = [ev[ev['ID'] == i]['sync_timestamps'].tolist() for i in taste_ids]
     df_clusgroup = pd.read_csv(pathtosp + r'\cluster_group.tsv', sep='\t', header=0)
     df_clusinfo = pd.read_csv(pathtosp + r'\cluster_info.tsv', sep='\t', header=0)
@@ -335,9 +355,21 @@ def packNPData(pathtoses, SesName, pathtosp,
                 events = [event for event in event_dic[taste] if  sessListBorders[tri] <= event < sessListBorders[tri+1]]
                 lengths = []
                 for event in events:
-                    spikes = [spike_train[i] - event for i in range(len(spike_train))  if
+                    spikes = [spike_train[i] - event for i in range(len(spike_train)) if
                           start_time < spike_train[i] - event < end_time]
-                    hist1, _ = np.histogram(spikes, bin_amount, (start_time, end_time))
+                    if bin_overlap != 0:
+                        # Calculate the step size based on overlap
+                        step_size = bin_width - bin_overlap
+
+                        # Initialize counters for each window
+                        hist1 = []
+                        for start_bin in np.arange(start_time, end_time - bin_width + step_size, step_size):
+                            end_bin = start_bin + bin_width
+                            num_events = sum(1 for t in spikes if start_bin <= t < end_bin)
+                            hist1.append(num_events)
+                    else:
+                        hist1, _ = np.histogram(spikes, bin_amount, (start_time, end_time))
+                    # If requested, the counts in a bin are tanstlated to FR by dividing by the bin width
                     if normalize == 'Hz':
                         hist1 = hist1 / bin_width
                     # spikes_all_trials = spikes_all_trials.append(hist1)
@@ -360,9 +392,16 @@ if __name__ == "__main__":
     bin_width = 0.2
 
     packed_data = packNPData(path_to_ses, SesName, pathtosp,taste_names=('water','sucrose','nacl', 'CA'),
-               taste_ids=range(1,5),)
+               start_time=-1, end_time=4, bin_width=0.5, bin_overlap=0.4, normalize=None)
+    import pickle as pkl
+    pfile = 'packed_data.pkl'
+    with open(pfile, 'wb') as f:
+        pkl.dump(packed_data, f)
+
+    '''   
     expdays = ['Hab3', 'CTA', 'Test', 'Ext']
     licl_time = 23.8  #in hrs, we'll call this t=0 of CTA
     evIDs = (1,2,3,4)
     breaktosess = True
     plotNPPSTH(path_to_ses,SesName, licl_time, expdays, g, imec, KKsorter, evIDs, breaktosess)
+'''
