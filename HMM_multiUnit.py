@@ -1,7 +1,6 @@
 # %%
 import numpy as np
 import matplotlib
-
 matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 import pickle
@@ -85,7 +84,7 @@ def generate_transition_matrix(n_states, FF=True):
     return transition_matrix
 
 
-def translateToFR(activity, win):
+def translateToCounts(activity):
     """
 
         Receives binary matrix of spike times and count their number in windows of win bins.
@@ -97,10 +96,10 @@ def translateToFR(activity, win):
         Returns:
             np.ndarray: counts of spike in bins. NxM, N bins, M=neurons
         """
-    activityFR = activity.reshape(-1, win).sum(axis=-1) / (win / 1000)
-    activityFR = activityFR.reshape(num_neurons, -1).T
+    counts = activity.reshape(-1, win).sum(axis=-1)
+    counts = counts.reshape(num_neurons, -1).T
 
-    return activityFR
+    return counts
 
 
 def predictLambdas(activities, trialsNum, num_states):
@@ -148,35 +147,40 @@ def fitBestPoissonModel(activities, trialsNum, num_states=3, num_iter=100):
     num_neurons = activities.shape[1]
     lengths = [ln] * trialsNum
     lambdas = predictLambdas(activities, trialsNum, num_states)
+    non_zero_cols = [np.sum(lambdas, axis=1) > 0.2][0]
+    lambdas = lambdas[non_zero_cols,:]
+    num_neurons = np.sum(non_zero_cols==True)
+    activities = activities[:,non_zero_cols]
 
     for itr in range(num_iter):
-        model = hmm.PoissonHMM(n_components=3, n_iter=100, verbose=False, init_params='', algorithm='map')
+        model = hmm.PoissonHMM(n_components=3, n_iter=100, verbose=False, init_params='', params='tl', algorithm='viterbi')
         # Assume the system alwasy start in state 0
         model.startprob_ = np.array([1.0, 0., 0.])
         # Generate a random transition metrix, either All-to-All, or feed forward
         model.transmat_ = generate_transition_matrix(num_states, FF=True)
         # Add some normal noise to the initial values of the initial firing rates
         model.lambdas_ = (lambdas + np.random.normal(loc=0, scale=lambdas / 5, size=(num_neurons, num_states))).T
-
+        model.lambdas_[model.lambdas_<0] = 0.0001
         # Fit the data
         model.fit(activities, lengths=lengths)
         models.append(model)
-        try:
-            scores.append(model.score(activities, lengths=lengths))
-        except:
-            scores.append(float('-inf'))
+        # try:
+        scores.append(model.score(activities, lengths=lengths))
+        # except:
+        #     scores.append(float('-inf'))
 
-        print(f'Converged: {model.monitor_.converged}'
-              f'\tScore: {scores[-1]}')
+        # print(f'Converged: {model.monitor_.converged}'
+        #       f'\tScore: {scores[-1]}')
 
     # get the best model
     modelret = models[np.argmax(scores)]
+    modelret.non_zero_cols = non_zero_cols
     return modelret
 
 
-def generate_activity(trialsNum, num_neurons, num_states, transition_matrix, firing_rates, duration_sec, win=200):
-    assert duration_sec * 1000 / win == int(
-        duration_sec * 1000 / win), "The time window for FR calculation should fit N times in the duration_sec"
+def generate_activity(trialsNum, num_neurons, num_states, transition_matrix, firing_rates, duration_sec, win=200, to_FR=False):
+    assert duration_sec * 1000 / win == int(duration_sec * 1000 / win), \
+        "The time window for FR calculation should fit N times in the duration_sec"
     activities = np.array([[0] * num_neurons])
     states_trials = list()  # a list of state sequences, one for each trial
     lengths = np.array([], dtype=int)  # number of samples for each trial per neuron
@@ -184,20 +188,22 @@ def generate_activity(trialsNum, num_neurons, num_states, transition_matrix, fir
         activity, states = simulate_neuronal_activity(num_neurons, num_states, transition_matrix, firing_rates,
                                                       duration_sec)
         # Translate spike times (binary vectors), into spike count in bins
-        activityFR = translateToFR(activity, win)
-        lengths = np.append(lengths, activityFR.shape[0])
-        activities = np.concatenate([activities, activityFR])
+        counts = translateToCounts(activity)
+        if to_FR==True:
+            counts = counts / (win/1000)
+        lengths = np.append(lengths, counts.shape[0])
+        activities = np.concatenate([activities, counts])
         states_trials.append(states)
 
     return activities[1:, :], states_trials, lengths
-
 
 def classifyBestModel(models, trial):
     '''
     Receives the firing rate of differnt neruons in a trial, and a list of models
     and return the model that best match the trial's data
     Args:
-        models (list): a list of model objects
+        models (dictionary): a dictionary with keys of taste names and value of
+            associated model objects
         trial: (np.array): a matrix containing the firing rates of neurons in bins
                         during differnt trials. Each column contains the activity of
                         different neuron. Across the column, the trails are concatenated
@@ -207,10 +213,31 @@ def classifyBestModel(models, trial):
         Returns:
             hmm.model: a model object
     '''
-
-    scores = [m.score(trial) for m in models]
+    tastes = models['taste_order']
+    scores = [models[taste].score(trial[:,models[taste].non_zero_cols]) for taste in tastes]
     ind = scores.index((max(scores)))
-    return models[ind], ind
+    return models[tastes[ind]], ind
+
+def computeTasteCoding(dic, models, n_trials=400):
+    tastes = models['taste_order']
+    confusion_mat = np.zeros((len(tastes), len(tastes)))
+    for n in range(n_trials):
+        trial, tr_taste_ind = chooseRandomTrial(dic, tastes)
+        model, classified_taste_ind = classifyBestModel(models, trial)
+        confusion_mat[tr_taste_ind, classified_taste_ind]+=1
+    return confusion_mat
+
+
+
+def chooseRandomTrial(dic, tastes):
+    rnd_taste = np.random.choice(tastes)
+    mat = dic['data'][rnd_taste]['FR']
+    lengths = dic['data'][rnd_taste]['lengths']
+    samps_trial = lengths[0]
+    trials_n = int(len(mat[:,0])/samps_trial)
+    rnd_trial = np.random.randint(0,trials_n)
+    retmat = mat[rnd_trial*samps_trial:(rnd_trial+1)*samps_trial,:]
+    return retmat, tastes.index(rnd_taste)
 
 
 if __name__ == "__main__":
@@ -221,8 +248,31 @@ if __name__ == "__main__":
     governed by a 3 underlying states. The transition matrix is feed forword 
 
     '''
-    # activities_test = np.array([[1]*20, [2]*20, [3]*20, [4]*20, [5]*20, [6]*20, [7]*20, [8]*20, [9]*20, [10]*20]).flatten().reshape(2, -1).T
-    # predictLambdas(activities_test, 5, 4)
+    import pickle as pkl
+    dp = r'C:\Users\AnanM\OneDrive - Tel-Aviv University\Documents\TAU\data\NP\ND7_post'
+    dps = r'C:\Users\AnanM\OneDrive - Tel-Aviv University\Documents\TAU\data\NP\ND7_post\ND7_post_g0'
+    dpks = r'C:\Users\AnanM\OneDrive - Tel-Aviv University\Documents\TAU\data\NP\ND7_post\ND7_post_g0\kilosort3'
+
+    file = open(dpks + r'\ND7_sp_movingWin.pkl', 'rb')
+    packed_data = pkl.load(file)
+    packed_data = packed_data[0:9]
+    coding = []
+    for i, dic in enumerate(packed_data):
+        print('starting epoch {} !!!!!!!!!!!!!!!!!!!!!!'.format(i))
+        taste_order = list(dic['data'].keys())
+        models = dict.fromkeys(taste_order)
+        models['taste_order'] = taste_order
+        for taste in taste_order:
+            FR_mat = dic['data'][taste]['FR']
+            # non_zero_cols = np.where(~(FR_mat == 0).all(axis=0))[0]
+            # non_zero_cols = np.sum(FR_mat, axis=0)[0]
+            # This line eliminate slow firing neurons that causes -inf log-probability.
+            # These neurons better be removed earlier with proper FR threshold
+            # nonslow = np.nonzero(np.sum(FR_mat, axis=0) > 10)[0]
+            # FR_matnonzcols = FR_mat[:, nonslow]
+            models[taste] = fitBestPoissonModel(FR_mat, len(dic['data'][taste]['lengths']),
+                                                    num_states=3, num_iter=100)
+        coding.append(computeTasteCoding(dic, models))
 
     num_neurons = 2
     num_states = 3
@@ -255,10 +305,10 @@ if __name__ == "__main__":
 
     # Responses to one taste1
     activities1, states_trials1, lengths1 = generate_activity(trialsNum, num_neurons, num_states, transition_matrix1,
-                                                              firing_rates1, duration_sec)
+                                                              firing_rates1, duration_sec, to_FR=False)
     # Responses to one taste2
     activities2, states_trials2, lengths2 = generate_activity(trialsNum, num_neurons, num_states, transition_matrix2,
-                                                              firing_rates2, duration_sec)
+                                                              firing_rates2, duration_sec, to_FR=False)
 
     rec_all, _ = activities1.shape
 
@@ -316,7 +366,8 @@ if __name__ == "__main__":
         else:
             Mis += 1
 
-        mod, ind = classifyBestModel([model1, model2], testTrial1)
+        models = {'taste_order': ['t1','t2'], 't1': model1, 't2': model2}
+        mod, ind = classifyBestModel(models, testTrial1)
 
     plt.show()
     print("Hits = {}, Misses = {}".format(Hit / trialsNum / 2, Mis / trialsNum / 2))
