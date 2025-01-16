@@ -147,15 +147,16 @@ def fitBestPoissonModel(activities, trialsNum, num_states=3, num_iter=100):
     num_neurons = activities.shape[1]
     lengths = [ln] * trialsNum
     lambdas = predictLambdas(activities, trialsNum, num_states)
-    non_zero_cols = [np.sum(lambdas, axis=1) > 0.2][0]
-    lambdas = lambdas[non_zero_cols,:]
-    num_neurons = np.sum(non_zero_cols==True)
-    activities = activities[:,non_zero_cols]
+    # CHECK THIS
+    # non_zero_cols = [np.sum(lambdas, axis=1) > 0.3][0]
+    # lambdas = lambdas[non_zero_cols,:]
+    # num_neurons = np.sum(non_zero_cols==True)
+    # activities = activities[:,non_zero_cols]
 
     for itr in range(num_iter):
-        model = hmm.PoissonHMM(n_components=3, n_iter=100, verbose=False, init_params='', params='tl', algorithm='viterbi')
+        model = hmm.PoissonHMM(n_components=num_states, n_iter=100, tol=1e-4, verbose=True, init_params='', params='tl', algorithm='viterbi')
         # Assume the system alwasy start in state 0
-        model.startprob_ = np.array([1.0, 0., 0.])
+        model.startprob_ = np.pad(np.array([1.]), (0,num_states-1), 'constant', constant_values=(0))
         # Generate a random transition metrix, either All-to-All, or feed forward
         model.transmat_ = generate_transition_matrix(num_states, FF=True)
         # Add some normal noise to the initial values of the initial firing rates
@@ -174,7 +175,7 @@ def fitBestPoissonModel(activities, trialsNum, num_states=3, num_iter=100):
 
     # get the best model
     modelret = models[np.argmax(scores)]
-    modelret.non_zero_cols = non_zero_cols
+    # modelret.non_zero_cols = non_zero_cols
     return modelret
 
 
@@ -239,6 +240,49 @@ def chooseRandomTrial(dic, tastes):
     retmat = mat[rnd_trial*samps_trial:(rnd_trial+1)*samps_trial,:]
     return retmat, tastes.index(rnd_taste)
 
+def findStateTransitions(model, trialsdata, lengths=None):
+    '''
+    Using the given HMM model to predict the state transition probabilities and their timing
+    :param model: Trained HMM model
+    :param trialsdata: (np.array) array-like, shape (n_samples, n_features)) –
+            Feature matrix of individual samples.
+    :param lengths: array-like of integers, shape (n_sequences, ) – Lengths of the individual sequences in X.
+            The sum of these should be n_samples
+    :return:
+    '''
+    seqs = model.predict(trialsdata, lengths)
+    trialsdata = trialsdata[:, model.non_zero_cols]
+    # diff = np.diff(seqs, axis=0)
+    # transitions = np.where(diff == 1)
+    transition_mat = matrix = [[[] for _ in range(model.n_components)] for _ in range(model.n_components)]
+    for i, lngth in enumerate(lengths):
+        seq = seqs[i*lngth:(i+1)*lngth]
+        for j in range(len(seq) - 1):
+            transition_mat[seq[j]][seq[j+1]].append(j)
+
+    return transition_mat
+
+
+def remove_slow_neurons(activity, binwidth, minFR=1):
+
+    activity = activity/binwidth
+    meanFR = np.mean(activity, axis=0)
+    non_zero_cols = np.where(meanFR > minFR)
+    activity = activity[:, non_zero_cols[0]]
+    return activity, non_zero_cols
+def find_states_number(trialsdata, lengths, n_components=(2,3,4,5,6)):
+
+    models = []
+
+    for n in n_components:
+        models.append(fitBestPoissonModel(trialsdata, lengths, num_states=n, num_iter=100))
+
+    aic = [model.aic(trialsdata) for model in models]
+    bic = [model.bic(trialsdata) for model in models]
+
+    return np.argmin(aic)
+
+
 
 if __name__ == "__main__":
     # %%
@@ -253,121 +297,167 @@ if __name__ == "__main__":
     dps = r'C:\Users\AnanM\OneDrive - Tel-Aviv University\Documents\TAU\data\NP\ND7_post\ND7_post_g0'
     dpks = r'C:\Users\AnanM\OneDrive - Tel-Aviv University\Documents\TAU\data\NP\ND7_post\ND7_post_g0\kilosort3'
 
-    file = open(dpks + r'\ND7_sp_movingWin.pkl', 'rb')
-    packed_data = pkl.load(file)
-    packed_data = packed_data[0:9]
-    coding = []
-    for i, dic in enumerate(packed_data):
-        print('starting epoch {} !!!!!!!!!!!!!!!!!!!!!!'.format(i))
-        taste_order = list(dic['data'].keys())
-        models = dict.fromkeys(taste_order)
-        models['taste_order'] = taste_order
+    simulate_exp = False
+    train_models = False
+    calc_transitions = False
+    find_best_state_num = True
+
+    if find_best_state_num:
+        num_states = (2, 3, 4, 5, 6)
+        with open(dpks + r'\ND7_sp_movingWin.pkl', 'rb') as file: packed_data = pkl.load(file)
+        exp_block_dic = packed_data[0]
+        taste_order = list(exp_block_dic['data'].keys())
+        block_models = dict.fromkeys(taste_order)
+        block_models['taste_order'] = taste_order
         for taste in taste_order:
-            FR_mat = dic['data'][taste]['FR']
-            # non_zero_cols = np.where(~(FR_mat == 0).all(axis=0))[0]
-            # non_zero_cols = np.sum(FR_mat, axis=0)[0]
-            # This line eliminate slow firing neurons that causes -inf log-probability.
-            # These neurons better be removed earlier with proper FR threshold
-            # nonslow = np.nonzero(np.sum(FR_mat, axis=0) > 10)[0]
-            # FR_matnonzcols = FR_mat[:, nonslow]
-            models[taste] = fitBestPoissonModel(FR_mat, len(dic['data'][taste]['lengths']),
-                                                    num_states=3, num_iter=100)
-        coding.append(computeTasteCoding(dic, models))
+            FR_mat_pre = exp_block_dic['data'][taste]['FR']
+            # FR_mat_pre += 0.01
+            # FR_mat_pre *= 100
+            # CHANGE THE BINWIDTH PARAM TO SOMETHING STORED IN THE PACKED DATA
+            FR_mat, non_zero_cols =  remove_slow_neurons(FR_mat_pre, binwidth=0.5, minFR=1 )
+            lengths = len(exp_block_dic['data'][taste]['lengths'])
+            block_models[taste] = num_states[find_states_number(FR_mat, lengths, n_components=num_states)]
+            print('for taste {} the best number of states is {}'.format(taste, block_models[taste]))
 
-    num_neurons = 2
-    num_states = 3
-    duration_sec = 5.0
-    win = 200
 
-    # Example transition matrix (you can customize this)
-    transition_matrix1 = np.array([[0.9995, 0.0005, 0.],
-                                   [0., 0.9995, 0.0005],
-                                   [0., 0., 1.0]])
 
-    transition_matrix2 = np.array([[0.99, 0.01, 0.],
-                                   [0., 0.9995, 0.0005],
-                                   [0., 0., 1.0]])
 
-    # The Emition firing rate matrix, randomly populated with some values.
-    firing_rates1 = np.zeros((num_neurons, num_states))
-    firing_rates1[:, 0:1] = np.random.uniform(low=1, high=7, size=(num_neurons, 1))
-    firing_rates1[:, 1:2] = np.random.uniform(low=25, high=30, size=(num_neurons, 1))
-    firing_rates1[:, 2:3] = np.random.uniform(low=5, high=10, size=(num_neurons, 1))
 
-    firing_rates2 = np.zeros((num_neurons, num_states))
-    firing_rates2[:, 0:1] = np.random.uniform(low=5, high=17, size=(num_neurons, 1))
-    firing_rates2[:, 1:2] = np.random.uniform(low=3, high=10, size=(num_neurons, 1))
-    firing_rates2[:, 2:3] = np.random.uniform(low=15, high=30, size=(num_neurons, 1))
+    if train_models:
+        with open(dpks + r'\ND7_sp_movingWin.pkl', 'rb') as file: packed_data = pkl.load(file)
+        packed_data = packed_data[0:9]
+        coding = []
+        models = []
+        for i, exp_block_dic in enumerate(packed_data):
+            print('starting epoch {} !!!!!!!!!!!!!!!!!!!!!!'.format(i))
+            taste_order = list(exp_block_dic['data'].keys())
+            block_models = dict.fromkeys(taste_order)
+            block_models['taste_order'] = taste_order
+            for taste in taste_order:
+                FR_mat = exp_block_dic['data'][taste]['FR']
+                block_models[taste] = fitBestPoissonModel(FR_mat, len(exp_block_dic['data'][taste]['lengths']),
+                                                        num_states=3, num_iter=100)
+            models.append(block_models)
+            coding.append(computeTasteCoding(exp_block_dic, block_models))
+        with open(dpks + r'\ND7_models.pkl', 'wb') as file: pkl.dump(models, file)
 
-    # Simulate neuronal activity
-    # %%
-    trialsNum = 10  # Number of trials
 
-    # Responses to one taste1
-    activities1, states_trials1, lengths1 = generate_activity(trialsNum, num_neurons, num_states, transition_matrix1,
-                                                              firing_rates1, duration_sec, to_FR=False)
-    # Responses to one taste2
-    activities2, states_trials2, lengths2 = generate_activity(trialsNum, num_neurons, num_states, transition_matrix2,
-                                                              firing_rates2, duration_sec, to_FR=False)
+    if calc_transitions:
+        num_states = 3
+        with open(dpks + r'\ND7_sp_movingWin.pkl', 'rb') as file:
+            packed_data = pkl.load(file)
+        packed_data = packed_data[0:9]
+        with open(dpks + r'\ND7_models.pkl', 'rb') as file:
+            models = pkl.load(file)
 
-    rec_all, _ = activities1.shape
+        fst_transition = []
+        snd_transition = []
+        for model in models:
+            taste_order = model['taste_order']
+            for t in taste_order:
+                fst_trans, snd_trans = findStateTransitions(model[t], packed_data[0]['data'][t]['FR'], packed_data[0]['data'][t]['lengths'])
+                fst_transition.append(fst_trans)
+                snd_transition.append(snd_trans)
+            a= 1
 
-    # %%
-    '''
-        i=0
-        fig, axes = plt.subplots(2,1)
-        axes[0].plot(states_trials[i])
-        axes[1].plot(activities[0:50])
-        plt.show(block=False)
-        # Save to a numpy file
-        with open('activity_data.pkl', 'wb') as f:
-            pickle.dump((activities, states_trials, num_neurons, num_states, transition_matrix, firing_rates, duration_sec), f)
+            # fst_trans, snd_trans = [transitions[0][np.where(transitions[1] == i)] for i in range(num_states)]
 
-        print("Neuronal activity saved to 'neuronal_activity.npy'.")
-    '''
-    # %%
-    trlen = lengths1[0]
-    Hit = Mis = 0;
-    fig, axes = plt.subplots(trialsNum, 1)
-    for i in range(trialsNum):
 
-        inds_trial = range(i * trlen, (i + 1) * trlen)
-        inds_rest = np.setdiff1d(range(rec_all), inds_trial)
+    if simulate_exp:
+        num_neurons = 2
+        num_states = 3
+        duration_sec = 5.0
+        win = 200
 
-        testTrial1 = activities1[inds_trial, :]
-        testTrial2 = activities2[inds_trial, :]
+        # Example transition matrix (you can customize this)
+        transition_matrix1 = np.array([[0.9995, 0.0005, 0.],
+                                       [0., 0.9995, 0.0005],
+                                       [0., 0., 1.0]])
 
-        activities1_ = activities1[inds_rest, :]
-        activities2_ = activities2[inds_rest, :]
-        model1 = fitBestPoissonModel(activities1_, trialsNum - 1, num_states=3)
-        model2 = fitBestPoissonModel(activities2_, trialsNum - 1, num_states=3)
+        transition_matrix2 = np.array([[0.99, 0.01, 0.],
+                                       [0., 0.9995, 0.0005],
+                                       [0., 0., 1.0]])
 
-        logprob1_1 = model1.score(testTrial1)
-        logprob2_1 = model2.score(testTrial1)
+        # The Emition firing rate matrix, randomly populated with some values.
+        firing_rates1 = np.zeros((num_neurons, num_states))
+        firing_rates1[:, 0:1] = np.random.uniform(low=1, high=7, size=(num_neurons, 1))
+        firing_rates1[:, 1:2] = np.random.uniform(low=25, high=30, size=(num_neurons, 1))
+        firing_rates1[:, 2:3] = np.random.uniform(low=5, high=10, size=(num_neurons, 1))
 
-        states_p1 = model1.predict(testTrial1)
-        states_p2 = model2.predict(testTrial1)
-        X1 = np.array([[x] * win for x in states_p1]).flatten().reshape(-1, int(duration_sec * 1000))[0]
-        X2 = np.array([[x] * win for x in states_p2]).flatten().reshape(-1, int(duration_sec * 1000))[0]
-        axes[i].plot(states_trials1[i], 'k')
-        axes[i].plot(X1, 'b')
-        axes[i].plot(X2, 'r')
+        firing_rates2 = np.zeros((num_neurons, num_states))
+        firing_rates2[:, 0:1] = np.random.uniform(low=5, high=17, size=(num_neurons, 1))
+        firing_rates2[:, 1:2] = np.random.uniform(low=3, high=10, size=(num_neurons, 1))
+        firing_rates2[:, 2:3] = np.random.uniform(low=15, high=30, size=(num_neurons, 1))
 
-        if (logprob1_1 > logprob2_1):
-            Hit += 1
+        # Simulate neuronal activity
+        # %%
+        trialsNum = 10  # Number of trials
 
-        else:
-            Mis += 1
+        # Responses to one taste1
+        activities1, states_trials1, lengths1 = generate_activity(trialsNum, num_neurons, num_states, transition_matrix1,
+                                                                  firing_rates1, duration_sec, to_FR=False)
+        # Responses to one taste2
+        activities2, states_trials2, lengths2 = generate_activity(trialsNum, num_neurons, num_states, transition_matrix2,
+                                                                  firing_rates2, duration_sec, to_FR=False)
 
-        logprob1_2 = model1.score(testTrial2)
-        logprob2_2 = model2.score(testTrial2)
-        if (logprob2_2 > logprob1_2):
-            Hit += 1
-        else:
-            Mis += 1
+        rec_all, _ = activities1.shape
 
-        models = {'taste_order': ['t1','t2'], 't1': model1, 't2': model2}
-        mod, ind = classifyBestModel(models, testTrial1)
+        # %%
+        '''
+            i=0
+            fig, axes = plt.subplots(2,1)
+            axes[0].plot(states_trials[i])
+            axes[1].plot(activities[0:50])
+            plt.show(block=False)
+            # Save to a numpy file
+            with open('activity_data.pkl', 'wb') as f:
+                pickle.dump((activities, states_trials, num_neurons, num_states, transition_matrix, firing_rates, duration_sec), f)
+    
+            print("Neuronal activity saved to 'neuronal_activity.npy'.")
+        '''
+        # %%
+        trlen = lengths1[0]
+        Hit = Mis = 0;
+        fig, axes = plt.subplots(trialsNum, 1)
+        for i in range(trialsNum):
 
-    plt.show()
-    print("Hits = {}, Misses = {}".format(Hit / trialsNum / 2, Mis / trialsNum / 2))
+            inds_trial = range(i * trlen, (i + 1) * trlen)
+            inds_rest = np.setdiff1d(range(rec_all), inds_trial)
+
+            testTrial1 = activities1[inds_trial, :]
+            testTrial2 = activities2[inds_trial, :]
+
+            activities1_ = activities1[inds_rest, :]
+            activities2_ = activities2[inds_rest, :]
+            model1 = fitBestPoissonModel(activities1_, trialsNum - 1, num_states=3)
+            model2 = fitBestPoissonModel(activities2_, trialsNum - 1, num_states=3)
+
+            logprob1_1 = model1.score(testTrial1)
+            logprob2_1 = model2.score(testTrial1)
+
+            states_p1 = model1.predict(testTrial1)
+            states_p2 = model2.predict(testTrial1)
+            X1 = np.array([[x] * win for x in states_p1]).flatten().reshape(-1, int(duration_sec * 1000))[0]
+            X2 = np.array([[x] * win for x in states_p2]).flatten().reshape(-1, int(duration_sec * 1000))[0]
+            axes[i].plot(states_trials1[i], 'k')
+            axes[i].plot(X1, 'b')
+            axes[i].plot(X2, 'r')
+
+            if (logprob1_1 > logprob2_1):
+                Hit += 1
+
+            else:
+                Mis += 1
+
+            logprob1_2 = model1.score(testTrial2)
+            logprob2_2 = model2.score(testTrial2)
+            if (logprob2_2 > logprob1_2):
+                Hit += 1
+            else:
+                Mis += 1
+
+            models = {'taste_order': ['t1','t2'], 't1': model1, 't2': model2}
+            mod, ind = classifyBestModel(models, testTrial1)
+
+        plt.show()
+        print("Hits = {}, Misses = {}".format(Hit / trialsNum / 2, Mis / trialsNum / 2))

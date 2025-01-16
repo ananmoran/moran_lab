@@ -306,7 +306,7 @@ def plotNPPSTH(path_to_ses,SesName, ctatime, expdays, g=0, imec=0, KKsorter='kil
 def packNPData(pathtoses, SesName, pathtosp,
                taste_names=('water','sucrose','nacl', 'CA','quinine'),
                taste_ids=range(1,6),
-               start_time=-1, end_time=4, bin_width=0.2, bin_overlap=0.1, normalize="Hz"):
+               start_time=-1, end_time=4, bin_width=0.5, bin_overlap=0.1, normalize="Hz"):
     '''
     Reads the sorted neuronal data of NP recording and pack it into a pickle file, for HMM analysis
     :param pathtoses: (str) The path to the folder containing the recorded data
@@ -387,14 +387,18 @@ if __name__ == "__main__":
     imec = 0
     KKsorter = 'kilosort3'
     pathtosp = r'C:\Users\AnanM\OneDrive - Tel-Aviv University\Documents\TAU\data\NP\ND7_post\ND7_post_g0\kilosort3'
-    start_time = -1
-    end_time = 5
-    bin_width = 0.2
+    start_time = 0
+    end_time = 4
+    bin_width = 0.25
+    bin_overlap = 0.2
+
+    data = np.load(pathtosp + r'\spike_seconds.npy', mmap_mode='r')
+    clust = np.load(pathtosp + r'\spike_clusters.npy', mmap_mode='r')
 
     packed_data = packNPData(path_to_ses, SesName, pathtosp,taste_names=('water','sucrose','nacl', 'CA'),
-               start_time=-1, end_time=4, bin_width=0.5, bin_overlap=0.4, normalize=None)
+               start_time=start_time, end_time=end_time, bin_width=bin_width, bin_overlap=bin_overlap, normalize=None)
     import pickle as pkl
-    pfile = 'packed_data.pkl'
+    pfile = 'packed_data_0_4_bin250_overlap200.pkl'
     with open(pfile, 'wb') as f:
         pkl.dump(packed_data, f)
 
