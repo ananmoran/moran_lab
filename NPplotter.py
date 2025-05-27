@@ -26,7 +26,7 @@ def getEventData(pathtoses, SesName, g=0, evIDs=(1,2,3,4)):
 # IDs of events indicates the taste?
     for i in evIDs:
         evfile = r'{}\{}_g{}_tcat.nidq.XD_0_{}_0_corr.txt'.format(evpath, SesName, g, i)
-        arr = np.loadtxt(evfile, 'float')
+        arr = np.loadtxt(evfile, float)
         synchronized_event_ts = np.append(synchronized_event_ts, arr.tolist())
         eventsID_tastes = np.append(eventsID_tastes, [i]*len(arr))
 
@@ -228,7 +228,7 @@ def plotUnitPSTHbyDay(data):
     plt.close(fig)
     return 1
 
-def plotNPPSTH(path_to_ses,SesName, ctatime, expdays, g=0, imec=0, KKsorter='kilosort3', evIDs=(1,2,3,4), breaktosess=True):
+def plotNPPSTH(path_to_ses,SesName, ctatime, expdays, g=0, imec=0, KKsorter='kilosort3', evIDs=(1,2,3,4), breaktosess=True, breaktodays=False):
 
     # gu = getGoodUnits(dpks)
     # gudata = getUnitsData(dpks, gu)
@@ -256,8 +256,10 @@ def plotNPPSTH(path_to_ses,SesName, ctatime, expdays, g=0, imec=0, KKsorter='kil
     g_unitss_gr = df_clusgroup[df_clusgroup['group'] == 'good'][['cluster_id']]
     g_unitss = df_clusinfo[df_clusinfo['cluster_id'].isin(g_unitss_gr['cluster_id'])][['cluster_id', 'depth']]
 
-    daytimes = np.loadtxt(os.path.join(path_to_ses, r'{}_g{}\{}'.format(SesName, g, 'daytimes_uncorr.txt')))
-    sessListBorders = findSessBorders_byday([t1s, t2s, t3s, t4s], daytimes)
+    if breaktodays==True:
+        daytimes = np.loadtxt(os.path.join(path_to_ses, r'{}_g{}\{}'.format(SesName, g, 'daytimes_uncorr.txt')))
+    if breaktosess==True:
+        sessListBorders = findSessBorders_byday([t1s, t2s, t3s, t4s], daytimes)
     tastes_dic = {'water': t1s, 'sugar': t2s, 'nacl': t3s, 'CA': t4s}
     tlist = ['water', 'sugar', 'nacl', 'CA']
 
